@@ -41,6 +41,6 @@ That’s expected for community-built unsigned executables. Prefer building from
 
 ## Source
 
-https://github.com/ej3mplo/grokBar
+https://github.com/JairoMS27/grokBar
 
 MIT License · created by [@ej3mplo](https://x.com/ej3mplo)

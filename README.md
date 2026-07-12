@@ -15,7 +15,7 @@ Dark, compact UI inspired by xAI / Grok. Free and open source.
 </p>
 
 <p align="center">
-  <a href="https://github.com/ej3mplo/grokBar/releases/latest"><img src="https://img.shields.io/github/v/release/ej3mplo/grokBar?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/JairoMS27/grokBar/releases/latest"><img src="https://img.shields.io/github/v/release/JairoMS27/grokBar?style=flat-square" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" /></a>
   <a href="https://x.com/ej3mplo"><img src="https://img.shields.io/badge/created%20by-%40ej3mplo-a78bfa?style=flat-square" alt="@ej3mplo" /></a>
 </p>
@@ -50,7 +50,7 @@ This creates `~/.grok/auth.json`. GrokBar only **reads** that file locally.
 
 ### 2. Download the app
 
-Grab **`GrokBar.exe`** from the [latest release](https://github.com/ej3mplo/grokBar/releases/latest).
+Grab **`GrokBar.exe`** from the [latest release](https://github.com/JairoMS27/grokBar/releases/latest).
 
 ### 3. Run it
 
@@ -95,7 +95,7 @@ Healthy (violet) → warning → critical as usage climbs.
 **Requirements:** Windows 10/11, Python 3.10+
 
 ```powershell
-git clone https://github.com/ej3mplo/grokBar.git
+git clone https://github.com/JairoMS27/grokBar.git
 cd grokBar
 python -m pip install -r requirements.txt
 python -m grok_bar

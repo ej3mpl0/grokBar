@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# Build / packaging
+dist/
+build/
+*.spec
+*.log
+
+# Local / secrets (never commit)
+.env
+.env.*
+*.pem
+auth.json
+**/auth.json
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local previews with possible PII
+preview*.png
+assets/tray_*.png
+assets/icon_clean.png

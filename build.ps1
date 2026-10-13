@@ -34,6 +34,7 @@ python -m PyInstaller `
     --paths $root `
     --hidden-import pystray._win32 `
     --hidden-import PIL._tkinter_finder `
+    --exclude-module numpy `
     --collect-all pystray `
     entry.py
 

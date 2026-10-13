@@ -13,8 +13,17 @@ from .auth import GrokAuth
 
 BILLING_CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 BILLING_MONTHLY_URL = "https://cli-chat-proxy.grok.com/v1/billing"
+SETTINGS_URL = "https://cli-chat-proxy.grok.com/v1/settings"
 CLIENT_VERSION = "0.2.93"
-USER_AGENT = "GrokBar/0.1 (+https://github.com/local/grok-bar)"
+USER_AGENT = "GrokBar/0.3 (+https://github.com/JairoMS27/grokBar)"
+
+_SHORT_NAMES = {
+    "GrokBuild": "Build",
+    "GrokBot": "Bot",
+    "GrokChat": "Chat",
+    "GrokImagine": "Imagine",
+    "Api": "API",
+}
 
 
 @dataclass(frozen=True)
@@ -26,11 +35,21 @@ class ProductUsage:
     def display_name(self) -> str:
         mapping = {
             "GrokBuild": "Grok Build",
+            "GrokBot": "Grok Bot",
             "GrokChat": "Grok Chat",
             "GrokImagine": "Grok Imagine",
             "Api": "API",
         }
         return mapping.get(self.product, self.product)
+
+    @property
+    def short_name(self) -> str:
+        known = _SHORT_NAMES.get(self.product)
+        if known:
+            return known
+        if self.product.startswith("Grok") and len(self.product) > 4:
+            return self.product[4:]
+        return self.product
 
 
 @dataclass(frozen=True)
@@ -51,18 +70,40 @@ class UsageSnapshot:
     monthly_period_start: datetime | None = None
     monthly_period_end: datetime | None = None
     is_unified_billing_user: bool | None = None
+    plan_name: str | None = None
     raw_credits: dict[str, Any] = field(default_factory=dict, repr=False)
     raw_monthly: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def primary_percent(self) -> float | None:
-        """Percent shown in the tray: prefer Grok Build, else overall credits."""
-        for product in self.products:
-            if product.product == "GrokBuild" and product.usage_percent is not None:
-                return float(product.usage_percent)
+        """Percent shown in the tray: the weekly pool, which products share."""
         if self.credit_usage_percent is not None:
             return float(self.credit_usage_percent)
+        for product in self.products:
+            if product.usage_percent is not None:
+                return float(product.usage_percent)
         return None
+
+    def detail_lines(self) -> list[tuple[str, str]]:
+        """Dollar rows worth showing. Zero caps and empty balances stay hidden."""
+        lines: list[tuple[str, str]] = []
+        if self.on_demand_cap and self.on_demand_cap > 0:
+            used = self.on_demand_used or 0.0
+            lines.append(
+                ("On-demand", f"{_fmt_dollars(used)} / {_fmt_dollars(self.on_demand_cap)}")
+            )
+        if self.monthly_limit and self.monthly_limit > 0:
+            lines.append(
+                (
+                    "This month",
+                    f"{_fmt_dollars(self.monthly_used or 0.0)} / {_fmt_dollars(self.monthly_limit)}",
+                )
+            )
+        elif self.monthly_used and self.monthly_used > 0:
+            lines.append(("This month", _fmt_dollars(self.monthly_used)))
+        if self.prepaid_balance and self.prepaid_balance > 0:
+            lines.append(("Prepaid", _fmt_dollars(self.prepaid_balance)))
+        return lines
 
     @property
     def remaining_percent(self) -> float | None:
@@ -188,9 +229,35 @@ def _parse_products(config: dict[str, Any]) -> list[ProductUsage]:
             usage_percent = None
         products.append(ProductUsage(product=product, usage_percent=usage_percent))
     # Stable, useful order.
-    order = {"GrokBuild": 0, "GrokChat": 1, "GrokImagine": 2, "Api": 3}
+    order = {"GrokBuild": 0, "GrokBot": 1, "GrokChat": 2, "GrokImagine": 3, "Api": 4}
     products.sort(key=lambda p: (order.get(p.product, 99), p.product))
     return products
+
+
+def _fmt_dollars(cents: float) -> str:
+    """Billing `val` fields are USD cents."""
+    dollars = cents / 100.0
+    if abs(dollars) >= 100:
+        return f"${dollars:,.0f}"
+    return f"${dollars:,.2f}"
+
+
+def _first_number(*values: float | None) -> float | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _fetch_plan_name(auth: GrokAuth) -> str | None:
+    try:
+        payload = _request_json(SETTINGS_URL, auth)
+    except BillingError:
+        return None
+    raw = payload.get("subscription_tier_display")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 def fetch_usage(auth: GrokAuth) -> UsageSnapshot:
@@ -225,9 +292,18 @@ def fetch_usage(auth: GrokAuth) -> UsageSnapshot:
         period_start=_parse_dt(period.get("start") or credits_cfg.get("billingPeriodStart")),
         period_end=_parse_dt(period.get("end") or credits_cfg.get("billingPeriodEnd")),
         products=_parse_products(credits_cfg),
-        prepaid_balance=_unwrap_val(credits_cfg.get("prepaidBalance")),
-        on_demand_used=_unwrap_val(credits_cfg.get("onDemandUsed")),
-        on_demand_cap=_unwrap_val(credits_cfg.get("onDemandCap")),
+        prepaid_balance=_first_number(
+            _unwrap_val(credits_cfg.get("prepaidBalance")),
+            _unwrap_val(monthly_cfg.get("prepaidBalance")),
+        ),
+        on_demand_used=_first_number(
+            _unwrap_val(credits_cfg.get("onDemandUsed")),
+            _unwrap_val(monthly_cfg.get("onDemandUsed")),
+        ),
+        on_demand_cap=_first_number(
+            _unwrap_val(credits_cfg.get("onDemandCap")),
+            _unwrap_val(monthly_cfg.get("onDemandCap")),
+        ),
         monthly_limit=_unwrap_val(monthly_cfg.get("monthlyLimit")),
         monthly_used=_unwrap_val(monthly_cfg.get("used")),
         monthly_period_start=_parse_dt(monthly_cfg.get("billingPeriodStart")),
@@ -237,6 +313,7 @@ def fetch_usage(auth: GrokAuth) -> UsageSnapshot:
             if "isUnifiedBillingUser" in credits_cfg
             else None
         ),
+        plan_name=_fetch_plan_name(auth),
         raw_credits=credits_payload,
         raw_monthly=monthly_payload,
     )

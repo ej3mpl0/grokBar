@@ -38,19 +38,20 @@ def cli() -> None:
         auth = load_auth(auth_path_from_env())
         snap = fetch_usage(auth)
         print(f"Account: {auth.email or auth.user_id or 'unknown'}")
-        print(f"Weekly total: {snap.credit_usage_percent}% used")
-        for p in snap.products:
-            if p.usage_percent is None:
-                print(f"  {p.display_name}: —")
+        if snap.plan_name:
+            print(f"Plan: {snap.plan_name}")
+        used = "—" if snap.credit_usage_percent is None else f"{snap.credit_usage_percent:g}%"
+        left = "—" if snap.remaining_percent is None else f"{snap.remaining_percent:g}%"
+        print(f"Weekly: {used} used, {left} left")
+        for product in snap.products:
+            if product.usage_percent is None:
+                print(f"  {product.display_name}: —")
             else:
-                print(f"  {p.display_name}: {p.usage_percent}%")
+                print(f"  {product.display_name}: {product.usage_percent:g}%")
         if snap.period_end:
             print(f"Period ends: {snap.period_end.isoformat()}")
-        if snap.monthly_used is not None:
-            print(
-                f"Monthly: ${snap.monthly_used/100:.2f} / "
-                f"${(snap.monthly_limit or 0)/100:.2f}"
-            )
+        for label, value in snap.detail_lines():
+            print(f"{label}: {value}")
         return
 
     if args.preview:

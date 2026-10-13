@@ -1,58 +1,55 @@
-"""Compact xAI / Grok-styled usage dashboard popup (fully rounded card)."""
+"""Compact tray popup: weekly quota, reset, and the products xAI actually reports."""
 
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
 from datetime import datetime, timezone
 from typing import Callable
 
 from . import __version__
-from .api import UsageSnapshot
+from .api import ProductUsage, UsageSnapshot
 
-# ── xAI / Grok palette ────────────────────────────────────────────────
-BG = "#050505"
-BG_CARD = "#121212"
-BG_SOFT = "#1c1c1c"
-BG_TRACK = "#262626"
-FG = "#f5f5f5"
-FG_MUTED = "#8a8a8a"
-FG_DIM = "#555555"
+BG = "#101010"
+FG = "#f4f4f5"
+FG_MUTED = "#8d8d93"
+FG_DIM = "#6a6a70"
+TRACK = "#2a2a2a"
+BAR = "#e7e7ea"
+WARN = "#e6b84e"
+CRIT = "#e15d55"
 ACCENT = "#c4b5fd"
-ACCENT_HOT = "#a78bfa"
-OK = "#86efac"
-WARN = "#fcd34d"
-CRIT = "#f87171"
-UNKNOWN = "#525252"
 TRANSPARENT = "#ff00ff"
 
 USAGE_URL = "https://grok.com/?_s=usage"
+CREATOR_URL = "https://x.com/ej3mplo"
 
-POPUP_W = 292
-POPUP_H = 420
-OUTER_R = 24
-INNER_R = 18
+POPUP_W = 260
+MARGIN = 16
+RADIUS = 16
+ICON_FONT = ("Segoe MDL2 Assets", 10)
 
 
 def color_for_used(percent: float | None) -> str:
     if percent is None:
-        return UNKNOWN
+        return FG_DIM
     if percent >= 90:
         return CRIT
     if percent >= 70:
         return WARN
-    if percent < 40:
-        return ACCENT_HOT
-    return OK
+    return BAR
 
 
 def fmt_percent(value: float | None) -> str:
     if value is None:
         return "—"
-    return f"{value:.0f}%"
+    if abs(value - round(value)) < 0.05:
+        return f"{value:.0f}%"
+    return f"{value:.1f}%"
 
 
-def fmt_local(dt: datetime | None) -> str:
+def fmt_when(dt: datetime | None) -> str:
     if dt is None:
         return "—"
     return dt.astimezone().strftime("%d %b · %H:%M")
@@ -61,8 +58,7 @@ def fmt_local(dt: datetime | None) -> str:
 def time_until(dt: datetime | None) -> str:
     if dt is None:
         return "—"
-    now = datetime.now(timezone.utc)
-    seconds = int((dt - now).total_seconds())
+    seconds = int((dt - datetime.now(timezone.utc)).total_seconds())
     if seconds <= 0:
         return "soon"
     days, rem = divmod(seconds, 86400)
@@ -73,6 +69,48 @@ def time_until(dt: datetime | None) -> str:
     if hours:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
+
+
+def ago(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    seconds = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if seconds < 15:
+        return "just now"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def fit(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def wrap_lines(text: str, limit: int, *, max_lines: int = 4) -> list[str]:
+    words = text.replace("\n", " ").split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        trial = word if not current else f"{current} {word}"
+        if len(trial) > limit and current:
+            lines.append(current)
+            current = word
+        else:
+            current = trial
+    if current:
+        lines.append(current)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = fit(lines[-1], limit)
+    return lines
 
 
 def rr(
@@ -97,7 +135,7 @@ def rr(
 
 
 class DashboardPopup:
-    """Rounded Grok-style tray popup with usage + settings views."""
+    """Small rounded tray card. Main view is usage only; settings stay one click away."""
 
     def __init__(
         self,
@@ -115,10 +153,12 @@ class DashboardPopup:
         self._error: str | None = None
         self._email: str | None = None
         self._start_with_windows = False
-        self._view: str = "main"  # main | settings
+        self._view: str = "main"
         self._canvas: tk.Canvas | None = None
         self._hotspots: list[tuple[float, float, float, float, Callable[[], None], str]] = []
         self._use_chroma = True
+        self._busy = False
+        self._height = 180
 
     @property
     def visible(self) -> bool:
@@ -146,12 +186,11 @@ class DashboardPopup:
         except tk.TclError:
             pass
 
-        canvas_bg = TRANSPARENT if self._use_chroma else BG
         canvas = tk.Canvas(
             root,
             width=POPUP_W,
-            height=POPUP_H,
-            bg=canvas_bg,
+            height=self._height,
+            bg=TRANSPARENT if self._use_chroma else BG,
             highlightthickness=0,
             bd=0,
         )
@@ -175,18 +214,18 @@ class DashboardPopup:
             self.hide()
 
     def _on_click(self, event: tk.Event) -> None:
-        for x1, y1, x2, y2, cb, _c in self._hotspots:
+        for x1, y1, x2, y2, callback, _cursor in self._hotspots:
             if x1 <= event.x <= x2 and y1 <= event.y <= y2:
-                cb()
+                callback()
                 return
 
     def _on_motion(self, event: tk.Event) -> None:
         if self._canvas is None:
             return
         cursor = ""
-        for x1, y1, x2, y2, _cb, c in self._hotspots:
+        for x1, y1, x2, y2, _callback, hotspot_cursor in self._hotspots:
             if x1 <= event.x <= x2 and y1 <= event.y <= y2:
-                cursor = c
+                cursor = hotspot_cursor
                 break
         self._canvas.configure(cursor=cursor)
 
@@ -255,6 +294,7 @@ class DashboardPopup:
     ) -> None:
         self._snapshot = snapshot
         self._error = error
+        self._busy = False
         if email is not None:
             self._email = email
         if self._root is not None and self._view == "main":
@@ -277,18 +317,37 @@ class DashboardPopup:
             self._visible = True
 
     def _position_near_tray(self, root: tk.Tk) -> None:
-        w, h = POPUP_W, POPUP_H
+        width, height = POPUP_W, self._height
         try:
             px, py = root.winfo_pointerxy()
         except tk.TclError:
             px, py = root.winfo_screenwidth() - 40, root.winfo_screenheight() - 40
         sw = root.winfo_vrootwidth() or root.winfo_screenwidth()
         sh = root.winfo_vrootheight() or root.winfo_screenheight()
-        x = min(max(12, px - w + 20), max(12, sw - w - 12))
-        y = min(max(12, py - h - 12), max(12, sh - h - 48))
-        root.geometry(f"{w}x{h}+{x}+{y}")
+        x = min(max(12, px - width + 28), max(12, sw - width - 12))
+        y = min(max(12, py - height - 12), max(12, sh - height - 48))
+        root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _apply_size(self, height: int) -> None:
+        root = self._root
+        canvas = self._canvas
+        if root is None or canvas is None:
+            return
+        height = max(120, int(height))
+        self._height = height
+        canvas.configure(width=POPUP_W, height=height)
+        if not self._visible:
+            root.geometry(f"{POPUP_W}x{height}")
+            return
+        x, y = root.winfo_x(), root.winfo_y()
+        sh = root.winfo_vrootheight() or root.winfo_screenheight()
+        if y + height > sh - 8:
+            y = max(8, sh - height - 48)
+        root.geometry(f"{POPUP_W}x{height}+{x}+{y}")
 
     def _click_refresh(self) -> None:
+        self._busy = True
+        self._paint()
         self._on_refresh()
 
     def _click_quit(self) -> None:
@@ -304,220 +363,324 @@ class DashboardPopup:
         self._paint()
 
     def _toggle_startup(self) -> None:
-        new_val = not self._start_with_windows
-        # Optimistic UI update; app confirms via update_settings.
-        self._start_with_windows = new_val
+        self._start_with_windows = not self._start_with_windows
         self._paint()
         if self._on_toggle_startup is not None:
-            self._on_toggle_startup(new_val)
+            self._on_toggle_startup(self._start_with_windows)
 
-    # ── paint ─────────────────────────────────────────────────────────
+    def _product_rows(self) -> list[ProductUsage]:
+        snap = self._snapshot
+        if snap is None:
+            return []
+        return [product for product in snap.products if product.usage_percent is not None]
 
     def _paint(self) -> None:
-        c = self._canvas
-        if c is None:
+        canvas = self._canvas
+        if canvas is None:
             return
-        c.delete("all")
-        self._hotspots.clear()
-
-        rr(c, 1, 1, POPUP_W - 1, POPUP_H - 1, OUTER_R, fill=BG)
-        self._ring_border(c, 1.5, 1.5, POPUP_W - 1.5, POPUP_H - 1.5, OUTER_R - 0.5, "#222222")
-
         if self._view == "settings":
-            self._paint_settings(c)
+            height = 196
         else:
-            self._paint_main(c)
+            height = self._main_height()
+        self._apply_size(height)
+        canvas.delete("all")
+        self._hotspots.clear()
+        rr(canvas, 1, 1, POPUP_W - 1, height - 1, RADIUS, fill=BG)
+        self._stroke(canvas, 1.5, 1.5, POPUP_W - 1.5, height - 1.5, RADIUS - 1, "#2c2c2c")
+        if self._view == "settings":
+            self._paint_settings(canvas)
+        else:
+            self._paint_main(canvas)
 
-    def _paint_main(self, c: tk.Canvas) -> None:
-        c.create_text(22, 26, text="grok", fill=FG, font=("Segoe UI Semibold", 12), anchor="w")
-        c.create_text(58, 26, text="· usage", fill=FG_DIM, font=("Segoe UI", 12), anchor="w")
-
-        # Settings gear
-        gear_box = (POPUP_W - 72, 12, POPUP_W - 44, 40)
-        c.create_text(
-            (gear_box[0] + gear_box[2]) / 2,
-            (gear_box[1] + gear_box[3]) / 2,
-            text="⚙",
-            fill=FG_MUTED,
-            font=("Segoe UI", 12),
-        )
-        self._hotspots.append((*gear_box, self._go_settings, "hand2"))
-
-        close_box = (POPUP_W - 42, 12, POPUP_W - 14, 40)
-        c.create_text(
-            (close_box[0] + close_box[2]) / 2,
-            (close_box[1] + close_box[3]) / 2,
-            text="✕",
-            fill=FG_DIM,
-            font=("Segoe UI", 10),
-        )
-        self._hotspots.append((*close_box, self.hide, "hand2"))
-
+    def _main_height(self) -> int:
         snap = self._snapshot
-        err = self._error
-
-        rr(c, 14, 46, POPUP_W - 14, 176, INNER_R, fill=BG_CARD)
-
-        build_pct = snap.product_percent("GrokBuild") if snap else None
-        primary = build_pct if build_pct is not None else (snap.credit_usage_percent if snap else None)
-        ring_color = color_for_used(primary)
-        self._draw_ring(c, cx=68, cy=111, radius=40, percent=primary, color=ring_color)
-
-        c.create_text(114, 76, text="Grok Build", fill=FG, font=("Segoe UI Semibold", 11), anchor="w")
         if snap is None:
-            sub = err[:42] if err else "waiting for data…"
-            status, scolor = ("Error" if err else "…", CRIT if err else FG_MUTED)
-        else:
-            sub = (
-                f"Weekly · resets {time_until(snap.period_end)}\n"
-                f"{fmt_local(snap.period_end)} · total {fmt_percent(snap.credit_usage_percent)}"
+            lines = wrap_lines(self._error or "Waiting for usage…", 36)
+            return 96 + max(1, len(lines)) * 16 + 28
+        height = 108
+        products = self._product_rows()
+        if products:
+            height += 8 + len(products) * 36
+        extras = snap.detail_lines()
+        if extras:
+            height += 6 + len(extras) * 22
+        height += 28
+        return height
+
+    def _paint_main(self, canvas: tk.Canvas) -> None:
+        snap = self._snapshot
+        self._header(
+            canvas,
+            fit(snap.plan_name, 22) if snap and snap.plan_name else "Grok",
+            show_settings=True,
+        )
+        if snap is None:
+            self._paint_empty(canvas)
+            return
+
+        percent = snap.credit_usage_percent
+        number = fmt_percent(percent)
+        number_color = color_for_used(percent)
+        canvas.create_text(
+            MARGIN,
+            58,
+            text=number,
+            fill=number_color if percent is not None else FG,
+            font=("Segoe UI Semibold", 26),
+            anchor="w",
+        )
+        number_width = self._measure(("Segoe UI Semibold", 26), number)
+        used_label = "used" if percent is not None else ""
+        if used_label:
+            canvas.create_text(
+                MARGIN + number_width + 6,
+                66,
+                text=used_label,
+                fill=FG_MUTED,
+                font=("Segoe UI", 9),
+                anchor="w",
             )
-            status, scolor = self._status_for(primary)
-        c.create_text(114, 106, text=sub, fill=FG_MUTED, font=("Segoe UI", 8), anchor="w", justify="left")
-        c.create_text(114, 146, text=f"●  {status}", fill=scolor, font=("Segoe UI Semibold", 8), anchor="w")
 
-        rr(c, 14, 188, POPUP_W - 14, 350, INNER_R, fill=BG_CARD)
-        c.create_text(28, 206, text="PRODUCTS", fill=FG_DIM, font=("Segoe UI Semibold", 7), anchor="w")
-
-        items: list[tuple[str, float | None]] = [
-            ("Build", snap.product_percent("GrokBuild") if snap else None),
-            ("Chat", snap.product_percent("GrokChat") if snap else None),
-            ("Img", snap.product_percent("GrokImagine") if snap else None),
-            ("API", snap.product_percent("Api") if snap else None),
-        ]
-        self._draw_vertical_bars(c, items, x0=28, y0=218, x1=POPUP_W - 28, y1=338)
-
-        if snap is not None:
-            who = self._email or ""
-            if len(who) > 26:
-                who = who[:10] + "…" + who[-10:]
-            meta = f"{fmt_local(snap.fetched_at)}  ·  {who}"
-            if err:
-                meta += f"  ·  {err[:20]}"
+        if percent is None:
+            sub = "not reported"
+            sub_color = FG_MUTED
+        elif percent > 100:
+            sub = f"{fmt_percent(percent - 100)} over"
+            sub_color = CRIT
         else:
-            meta = err or "no data"
-        c.create_text(22, 368, text=meta, fill=FG_DIM, font=("Segoe UI", 7), anchor="w")
+            sub = f"{fmt_percent(max(0.0, 100.0 - percent))} left"
+            sub_color = FG_MUTED
+        canvas.create_text(MARGIN, 86, text=sub, fill=sub_color, font=("Segoe UI", 9), anchor="w")
 
-        self._draw_pill(c, 18, 382, 90, 408, "Refresh", self._click_refresh)
-        self._draw_pill(c, 98, 382, 154, 408, "Web", lambda: webbrowser.open(USAGE_URL))
-        self._draw_pill(c, POPUP_W - 78, 382, POPUP_W - 18, 408, "Quit", self._click_quit, muted=True)
-        c.create_text(POPUP_W / 2, POPUP_H - 8, text=f"v{__version__}", fill=FG_DIM, font=("Segoe UI", 6))
-
-    def _paint_settings(self, c: tk.Canvas) -> None:
-        # Back
-        back_box = (14, 12, 48, 40)
-        c.create_text(
-            (back_box[0] + back_box[2]) / 2,
-            (back_box[1] + back_box[3]) / 2,
-            text="←",
-            fill=FG_MUTED,
-            font=("Segoe UI Semibold", 14),
+        canvas.create_text(
+            POPUP_W - MARGIN,
+            56,
+            text=time_until(snap.period_end),
+            fill=FG,
+            font=("Segoe UI Semibold", 12),
+            anchor="e",
         )
-        self._hotspots.append((*back_box, self._go_main, "hand2"))
-
-        c.create_text(56, 26, text="Settings", fill=FG, font=("Segoe UI Semibold", 12), anchor="w")
-
-        close_box = (POPUP_W - 42, 12, POPUP_W - 14, 40)
-        c.create_text(
-            (close_box[0] + close_box[2]) / 2,
-            (close_box[1] + close_box[3]) / 2,
-            text="✕",
+        canvas.create_text(
+            POPUP_W - MARGIN,
+            76,
+            text=fmt_when(snap.period_end),
             fill=FG_DIM,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 8),
+            anchor="e",
         )
-        self._hotspots.append((*close_box, self.hide, "hand2"))
 
-        # Startup card
-        rr(c, 14, 56, POPUP_W - 14, 148, INNER_R, fill=BG_CARD)
-        c.create_text(28, 82, text="Start with Windows", fill=FG, font=("Segoe UI Semibold", 10), anchor="w")
-        c.create_text(
-            28,
-            104,
-            text="Adds a shortcut to your Startup folder\n(no registry — fewer antivirus false positives)",
+        y = 108
+        products = self._product_rows()
+        if products:
+            y += 4
+            for product in products:
+                self._product_row(canvas, product, y)
+                y += 36
+        extras = snap.detail_lines()
+        if extras:
+            y += 4
+            for label, value in extras:
+                self._text_row(canvas, label, value, y + 8)
+                y += 22
+
+        y += 16
+        if self._busy:
+            footer = "refreshing…"
+            footer_color = FG_MUTED
+        elif self._error:
+            footer = fit(f"refresh failed · {self._error}", 42)
+            footer_color = CRIT
+        else:
+            who = self._email or ""
+            when = ago(snap.fetched_at)
+            bits = [bit for bit in (f"updated {when}" if when else "", who) if bit]
+            footer = fit(" · ".join(bits) or "updated", 42)
+            footer_color = FG_DIM
+        canvas.create_text(MARGIN, y, text=footer, fill=footer_color, font=("Segoe UI", 8), anchor="w")
+
+    def _paint_empty(self, canvas: tk.Canvas) -> None:
+        message = self._error or "Waiting for usage…"
+        color = CRIT if self._error else FG_MUTED
+        y = 64
+        for line in wrap_lines(message, 36):
+            canvas.create_text(MARGIN, y, text=line, fill=color, font=("Segoe UI", 9), anchor="w")
+            y += 16
+        if self._error:
+            canvas.create_text(
+                MARGIN,
+                y + 10,
+                text="Run grok login, then refresh",
+                fill=FG_DIM,
+                font=("Segoe UI", 8),
+                anchor="w",
+            )
+
+    def _paint_settings(self, canvas: tk.Canvas) -> None:
+        self._header(canvas, "Settings", show_settings=False, show_back=True)
+
+        canvas.create_text(
+            MARGIN,
+            64,
+            text="Start with Windows",
+            fill=FG,
+            font=("Segoe UI Semibold", 10),
+            anchor="w",
+        )
+        canvas.create_text(
+            MARGIN,
+            84,
+            text="Startup folder shortcut. No registry key.",
             fill=FG_MUTED,
             font=("Segoe UI", 8),
             anchor="w",
-            justify="left",
         )
-        # Toggle switch
-        self._draw_toggle(c, x2=POPUP_W - 30, y=88, on=self._start_with_windows, cb=self._toggle_startup)
-
-        # About card
-        rr(c, 14, 164, POPUP_W - 14, 300, INNER_R, fill=BG_CARD)
-        c.create_text(28, 188, text="About", fill=FG_DIM, font=("Segoe UI Semibold", 7), anchor="w")
-        c.create_text(28, 212, text=f"GrokBar  v{__version__}", fill=FG, font=("Segoe UI Semibold", 10), anchor="w")
-        c.create_text(
-            28,
-            234,
-            text="Uses your local grok login\n(~/.grok/auth.json). No extra keys.",
-            fill=FG_MUTED,
-            font=("Segoe UI", 8),
-            anchor="w",
-            justify="left",
-        )
-        # Creator credit → X profile
-        c.create_text(28, 272, text="created by", fill=FG_DIM, font=("Segoe UI", 8), anchor="w")
-        credit = " @ej3mplo"
-        c.create_text(
-            88,
-            272,
-            text=credit,
-            fill=ACCENT_HOT,
-            font=("Segoe UI Semibold", 8),
-            anchor="w",
-            tags="creator_credit",
-        )
-        # Approximate hit box for the handle
-        self._hotspots.append(
-            (80, 260, 180, 286, lambda: webbrowser.open("https://x.com/ej3mplo"), "hand2")
+        self._draw_toggle(
+            canvas,
+            x2=POPUP_W - MARGIN,
+            y=64,
+            on=self._start_with_windows,
+            callback=self._toggle_startup,
         )
 
-        # Auth hint card
-        rr(c, 14, 314, POPUP_W - 14, 368, INNER_R, fill=BG_CARD)
-        c.create_text(28, 334, text="Not signed in?", fill=FG, font=("Segoe UI Semibold", 9), anchor="w")
-        c.create_text(
-            28,
-            352,
-            text="Run  grok login  in a terminal",
-            fill=FG_MUTED,
+        self._link(canvas, MARGIN, 118, "Open usage page", lambda: webbrowser.open(USAGE_URL))
+        canvas.create_text(
+            MARGIN,
+            146,
+            text="Uses the local grok login",
+            fill=FG_DIM,
             font=("Segoe UI", 8),
             anchor="w",
         )
+        canvas.create_text(
+            MARGIN,
+            170,
+            text=f"v{__version__}",
+            fill=FG_DIM,
+            font=("Segoe UI", 8),
+            anchor="w",
+        )
+        self._link(canvas, 78, 170, "@ej3mplo", lambda: webbrowser.open(CREATOR_URL), size=8)
+        self._link(canvas, POPUP_W - MARGIN - 28, 170, "Quit", self._click_quit, size=8, color=FG_MUTED)
 
-        self._draw_pill(c, 18, 382, 90, 408, "Back", self._go_main)
-        self._draw_pill(c, POPUP_W - 78, 382, POPUP_W - 18, 408, "Quit", self._click_quit, muted=True)
-        c.create_text(POPUP_W / 2, POPUP_H - 8, text=f"v{__version__}", fill=FG_DIM, font=("Segoe UI", 6))
+    def _header(
+        self,
+        canvas: tk.Canvas,
+        title: str,
+        *,
+        show_settings: bool,
+        show_back: bool = False,
+    ) -> None:
+        left = MARGIN
+        if show_back:
+            self._glyph(canvas, 22, 22, "\uE72B", self._go_main)
+            left = 42
+        canvas.create_text(
+            left,
+            22,
+            text=title,
+            fill=FG,
+            font=("Segoe UI Semibold", 11),
+            anchor="w",
+        )
+        close_x = POPUP_W - 22
+        self._glyph(canvas, close_x, 22, "\uE8BB", self.hide)
+        if show_settings:
+            self._glyph(canvas, close_x - 28, 22, "\uE713", self._go_settings)
+            self._glyph(canvas, close_x - 56, 22, "\uE72C", self._click_refresh)
+
+    def _glyph(self, canvas: tk.Canvas, cx: float, cy: float, text: str, callback: Callable[[], None]) -> None:
+        canvas.create_text(cx, cy, text=text, fill=FG_MUTED, font=ICON_FONT)
+        self._hotspots.append((cx - 12, cy - 12, cx + 12, cy + 12, callback, "hand2"))
+
+    def _link(
+        self,
+        canvas: tk.Canvas,
+        x: float,
+        y: float,
+        text: str,
+        callback: Callable[[], None],
+        *,
+        size: int = 9,
+        color: str = ACCENT,
+    ) -> None:
+        canvas.create_text(x, y, text=text, fill=color, font=("Segoe UI Semibold", size), anchor="w")
+        width = self._measure(("Segoe UI Semibold", size), text)
+        self._hotspots.append((x - 2, y - 10, x + width + 4, y + 10, callback, "hand2"))
+
+    def _product_row(self, canvas: tk.Canvas, product: ProductUsage, top: float) -> None:
+        percent = product.usage_percent
+        color = color_for_used(percent)
+        canvas.create_text(
+            MARGIN,
+            top + 8,
+            text=fit(product.short_name, 18),
+            fill=FG,
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        canvas.create_text(
+            POPUP_W - MARGIN,
+            top + 8,
+            text=fmt_percent(percent),
+            fill=color if percent is not None else FG_DIM,
+            font=("Segoe UI Semibold", 9),
+            anchor="e",
+        )
+        self._bar(canvas, MARGIN, top + 22, POPUP_W - MARGIN, top + 26, percent, color)
+
+    def _text_row(self, canvas: tk.Canvas, label: str, value: str, cy: float) -> None:
+        canvas.create_text(MARGIN, cy, text=label, fill=FG, font=("Segoe UI", 9), anchor="w")
+        canvas.create_text(
+            POPUP_W - MARGIN,
+            cy,
+            text=value,
+            fill=FG_MUTED,
+            font=("Segoe UI Semibold", 9),
+            anchor="e",
+        )
+
+    def _bar(
+        self,
+        canvas: tk.Canvas,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        percent: float | None,
+        color: str,
+    ) -> None:
+        radius = (y2 - y1) / 2
+        rr(canvas, x1, y1, x2, y2, radius, fill=TRACK)
+        used = 0.0 if percent is None else max(0.0, min(100.0, percent))
+        if used <= 0:
+            return
+        fill_w = max(y2 - y1, (x2 - x1) * (used / 100.0))
+        fill_w = min(fill_w, x2 - x1)
+        rr(canvas, x1, y1, x1 + fill_w, y2, radius, fill=color)
 
     def _draw_toggle(
         self,
-        c: tk.Canvas,
+        canvas: tk.Canvas,
         *,
         x2: float,
         y: float,
         on: bool,
-        cb: Callable[[], None],
+        callback: Callable[[], None],
     ) -> None:
-        """iOS-style switch; right edge at x2, vertical center ~ y."""
-        w, h = 44, 24
-        x1 = x2 - w
-        y1 = y - h / 2
-        y2 = y + h / 2
-        track = ACCENT_HOT if on else BG_TRACK
-        rr(c, x1, y1, x2, y2, h / 2, fill=track)
-        # Knob
+        width, height = 40, 22
+        x1 = x2 - width
+        y1 = y - height / 2
+        y2 = y + height / 2
+        rr(canvas, x1, y1, x2, y2, height / 2, fill=ACCENT if on else TRACK)
         pad = 3
-        kr = (h - 2 * pad) / 2
-        if on:
-            kx = x2 - pad - kr
-        else:
-            kx = x1 + pad + kr
-        ky = y
-        c.create_oval(kx - kr, ky - kr, kx + kr, ky + kr, fill=FG, outline=FG)
-        self._hotspots.append((x1 - 4, y1 - 4, x2 + 4, y2 + 4, cb, "hand2"))
+        knob = (height - 2 * pad) / 2
+        kx = (x2 - pad - knob) if on else (x1 + pad + knob)
+        canvas.create_oval(kx - knob, y - knob, kx + knob, y + knob, fill=FG, outline=FG)
+        self._hotspots.append((x1 - 6, y1 - 6, x2 + 6, y2 + 6, callback, "hand2"))
 
-    def _ring_border(
+    def _stroke(
         self,
-        c: tk.Canvas,
+        canvas: tk.Canvas,
         x1: float,
         y1: float,
         x2: float,
@@ -525,147 +688,15 @@ class DashboardPopup:
         r: float,
         color: str,
     ) -> None:
-        c.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90, style=tk.ARC, outline=color, width=1)
-        c.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r, start=0, extent=90, style=tk.ARC, outline=color, width=1)
-        c.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2, start=180, extent=90, style=tk.ARC, outline=color, width=1)
-        c.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2, start=270, extent=90, style=tk.ARC, outline=color, width=1)
-        c.create_line(x1 + r, y1, x2 - r, y1, fill=color)
-        c.create_line(x1 + r, y2, x2 - r, y2, fill=color)
-        c.create_line(x1, y1 + r, x1, y2 - r, fill=color)
-        c.create_line(x2, y1 + r, x2, y2 - r, fill=color)
-
-    def _draw_pill(
-        self,
-        c: tk.Canvas,
-        x1: float,
-        y1: float,
-        x2: float,
-        y2: float,
-        label: str,
-        cb: Callable[[], None],
-        *,
-        muted: bool = False,
-    ) -> None:
-        rr(c, x1, y1, x2, y2, (y2 - y1) / 2, fill=BG_SOFT)
-        c.create_text(
-            (x1 + x2) / 2,
-            (y1 + y2) / 2,
-            text=label,
-            fill=FG_MUTED if muted else FG,
-            font=("Segoe UI Semibold", 8),
-        )
-        self._hotspots.append((x1, y1, x2, y2, cb, "hand2"))
-
-    def _draw_ring(
-        self,
-        c: tk.Canvas,
-        *,
-        cx: float,
-        cy: float,
-        radius: float,
-        percent: float | None,
-        color: str,
-    ) -> None:
-        width = 8
-        c.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, outline=BG_TRACK, width=width)
-        used = 0.0 if percent is None else max(0.0, min(100.0, percent))
-        if used > 0:
-            c.create_arc(
-                cx - radius,
-                cy - radius,
-                cx + radius,
-                cy + radius,
-                start=90,
-                extent=-used * 3.6,
-                style=tk.ARC,
-                outline=color,
-                width=width,
-            )
-        text = "—" if percent is None else f"{percent:.0f}"
-        c.create_text(cx, cy - 4, text=text, fill=FG, font=("Segoe UI Semibold", 18))
-        c.create_text(cx, cy + 14, text="%", fill=FG_MUTED, font=("Segoe UI", 8))
-
-    def _draw_vertical_bars(
-        self,
-        c: tk.Canvas,
-        items: list[tuple[str, float | None]],
-        *,
-        x0: float,
-        y0: float,
-        x1: float,
-        y1: float,
-    ) -> None:
-        n = max(len(items), 1)
-        gap = 14.0
-        usable = x1 - x0
-        bar_w = max(14.0, min(24.0, (usable - gap * (n - 1)) / n))
-        total = n * bar_w + (n - 1) * gap
-        start = x0 + max(0.0, (usable - total) / 2)
-        pct_h = 14.0
-        label_h = 14.0
-        plot_top = y0 + pct_h
-        plot_bot = y1 - label_h
-        plot_h = max(24.0, plot_bot - plot_top)
-        min_fill = 4.0
-        radius = min(8.0, bar_w / 2)
-
-        for i, (label, pct) in enumerate(items):
-            bx0 = start + i * (bar_w + gap)
-            bx1 = bx0 + bar_w
-            color = color_for_used(pct)
-            used = 0.0 if pct is None else max(0.0, min(100.0, pct))
-
-            rr(c, bx0, plot_top, bx1, plot_bot, radius, fill=BG_TRACK)
-
-            if used > 0:
-                fill_h = max(min_fill, (used / 100.0) * plot_h)
-                fy0 = plot_bot - fill_h
-                self._fill_bar(c, bx0, fy0, bx1, plot_bot, radius, color)
-
-            c.create_text(
-                (bx0 + bx1) / 2,
-                y0 + pct_h / 2,
-                text=fmt_percent(pct),
-                fill=color if pct is not None else FG_DIM,
-                font=("Segoe UI Semibold", 8),
-            )
-            c.create_text(
-                (bx0 + bx1) / 2,
-                y1 - label_h / 2,
-                text=label,
-                fill=FG_MUTED,
-                font=("Segoe UI", 8),
-            )
-
-    def _fill_bar(
-        self,
-        c: tk.Canvas,
-        x0: float,
-        y0: float,
-        x1: float,
-        y1: float,
-        r: float,
-        color: str,
-    ) -> None:
-        height = y1 - y0
-        width = x1 - x0
-        if height <= 0 or width <= 0:
-            return
-        if height >= 2 * r:
-            rr(c, x0, y0, x1, y1, r, fill=color)
-            return
-        rr_cap = min(r, height / 2, width / 2)
-        c.create_rectangle(x0, y0, x1, y1 - rr_cap, fill=color, outline=color)
-        c.create_oval(x0, y1 - 2 * rr_cap, x1, y1, fill=color, outline=color)
+        canvas.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90, style=tk.ARC, outline=color, width=1)
+        canvas.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r, start=0, extent=90, style=tk.ARC, outline=color, width=1)
+        canvas.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2, start=180, extent=90, style=tk.ARC, outline=color, width=1)
+        canvas.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2, start=270, extent=90, style=tk.ARC, outline=color, width=1)
+        canvas.create_line(x1 + r, y1, x2 - r, y1, fill=color)
+        canvas.create_line(x1 + r, y2, x2 - r, y2, fill=color)
+        canvas.create_line(x1, y1 + r, x1, y2 - r, fill=color)
+        canvas.create_line(x2, y1 + r, x2, y2 - r, fill=color)
 
     @staticmethod
-    def _status_for(percent: float | None) -> tuple[str, str]:
-        if percent is None:
-            return "Unknown", FG_MUTED
-        if percent >= 100:
-            return "Depleted", CRIT
-        if percent >= 90:
-            return "Critical", CRIT
-        if percent >= 70:
-            return "Warning", WARN
-        return "Healthy", ACCENT
+    def _measure(font_spec: tuple[str, int], text: str) -> int:
+        return tkfont.Font(family=font_spec[0], size=font_spec[1]).measure(text)

@@ -188,9 +188,12 @@ class GrokBarApp:
             self._maybe_notify(snapshot)
             self._popup.update_data(snapshot, error=None, email=auth.email)
             log.info(
-                "Usage refreshed: build=%s overall=%s",
-                snapshot.product_percent("GrokBuild"),
+                "Usage refreshed: weekly=%s products=%s",
                 snapshot.credit_usage_percent,
+                ", ".join(
+                    f"{product.short_name}:{product.usage_percent}"
+                    for product in snapshot.products
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             message = str(exc) or exc.__class__.__name__
@@ -285,13 +288,18 @@ class GrokBarApp:
         self._icon.title = f"GrokBar error — {short}"
 
     def _tooltip(self, snapshot: UsageSnapshot) -> str:
-        build = _fmt_percent(snapshot.product_percent("GrokBuild"))
-        overall = _fmt_percent(snapshot.credit_usage_percent)
-        reset = _time_until(snapshot.period_end)
+        used = _fmt_percent(snapshot.primary_percent)
+        left = _fmt_percent(snapshot.remaining_percent)
+        parts = [
+            f"{product.short_name} {_fmt_percent(product.usage_percent)}"
+            for product in snapshot.products
+            if product.usage_percent is not None
+        ]
+        split = " · ".join(parts[:4]) or "No product split"
         return (
-            f"Grok Build {build} used  |  Total {overall}\n"
-            f"Resets in {reset}  ·  {_fmt_local(snapshot.period_end)}\n"
-            f"Click to open dashboard"
+            f"Grok {used} used · {left} left\n"
+            f"{split}\n"
+            f"Resets in {_time_until(snapshot.period_end)}"
         )
 
     def _maybe_notify(self, snapshot: UsageSnapshot) -> None:
@@ -303,8 +311,9 @@ class GrokBarApp:
                 self._notified.add(threshold)
                 try:
                     self._icon.notify(
-                        f"Grok Build at {percent:.0f}% of weekly quota "
-                        f"(resets in {_time_until(snapshot.period_end)})",
+                        f"Weekly quota at {percent:.0f}% "
+                        f"({_fmt_percent(snapshot.remaining_percent)} left, "
+                        f"resets in {_time_until(snapshot.period_end)})",
                         title="GrokBar",
                     )
                 except Exception:  # noqa: BLE001

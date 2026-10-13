@@ -26,10 +26,12 @@ Dark, compact UI inspired by xAI / Grok. Free and open source.
 
 | | |
 |---|---|
-| **Tray ring** | Color-coded % for Grok Build at a glance |
-| **Popup dashboard** | Rounded dark card — ring gauge + **vertical** product bars |
-| **Products** | Build · Chat · Imagine · API (when the API reports %) |
-| **Weekly window** | Reset countdown + total credit usage |
+| **Tray ring** | Weekly quota % — the pool that actually runs out |
+| **Popup** | Small card: used, left, reset, and one bar per real product |
+| **Products** | Whatever the API returns (Build, Bot, Chat, Imagine, API, …) |
+| **Plan** | Account plan name when xAI sends it |
+| **Spend** | On-demand and monthly dollars, only when they aren’t zero |
+| **Weekly window** | Reset countdown and how much of the week is left |
 | **Settings** | Start with Windows via **Startup folder** shortcut (not registry) |
 | **Local auth** | Reuses `grok login` — **no extra API key** |
 | **Notifications** | Alerts at 70% / 90% / 100% |
@@ -74,13 +76,13 @@ Optional: **Settings → Start with Windows**.
 
 ![Dashboard](docs/screenshot-dashboard.png)
 
-Weekly Grok Build ring, product breakdown (vertical bars), refresh / web / quit.
+Weekly total, time left until reset, and a horizontal bar for each product in the response. Empty products are not invented.
 
 ### Settings
 
 ![Settings](docs/screenshot-settings.png)
 
-Start with Windows, about, and creator credit.
+Start with Windows, usage page, and creator credit.
 
 ### Tray
 
@@ -122,8 +124,9 @@ python -m grok_bar --preview   # popup only
 1. Loads the session token from `~/.grok/auth.json` (same as the Grok CLI).
 2. Calls xAI’s billing endpoints used by `/usage` in the CLI:
 
-   - `GET …/v1/billing?format=credits` → weekly % + per-product usage  
-   - `GET …/v1/billing` → optional monthly context (not shown as a big bar in UI)
+   - `GET …/v1/billing?format=credits` → weekly % + the products that actually used quota  
+   - `GET …/v1/billing` → on-demand and monthly dollars, shown only when non-zero  
+   - `GET …/v1/settings` → plan name (best effort)
 
 3. Renders tray icon + popup. Auto-refreshes every ~2 minutes.
 

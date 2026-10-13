@@ -1,4 +1,4 @@
-# GrokBar v0.2.2
+# GrokBar v0.3.0
 
 Windows system-tray monitor for **Grok Build** usage.
 
@@ -17,11 +17,12 @@ Windows system-tray monitor for **Grok Build** usage.
 
 ## What’s new
 
-- Dark xAI-style rounded dashboard (vertical product bars)
-- Tray ring with usage %
-- **Start with Windows** via Startup-folder shortcut (no registry Run key — fewer AV false positives)
+- Compact popup: weekly used, weekly left, and the reset — no ring, no empty cards
+- Product rows come from the API. Bot (and any new product) shows up; Chat / Imagine / API are not invented when the account doesn’t use them
+- Tray icon and alerts follow the weekly pool, not only Grok Build
+- Plan name in the header. On-demand and monthly dollars appear only when they are non-zero
+- **Start with Windows** via Startup-folder shortcut (no registry Run key)
 - Settings panel + link to [@ej3mplo](https://x.com/ej3mplo)
-- Custom app icon
 
 ## Notes / SmartScreen
 
